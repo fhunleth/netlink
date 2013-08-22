@@ -30,15 +30,15 @@
 -export([unsubscribe/1]).
 -export([get_root/2, get_match/3, get/4]).
 
--include_lib("lager/include/log.hrl").
+-include_lib("lager/include/lager.hrl").
 -include("netlink.hrl").
 -include("netl_codec.hrl").
 
--define(SERVER, ?MODULE). 
+-define(SERVER, ?MODULE).
 
 -type if_addr_field() :: address | local | broadcast | anycast | multicast.
 
--type if_link_field() :: name | index | mtu | txqlen | flags | 
+-type if_link_field() :: name | index | mtu | txqlen | flags |
 			 operstate | qdisc | address | broadcast.
 
 -type uint8_t() :: 0..16#ff.
@@ -93,7 +93,7 @@
 	  seq=0     %% sequence to expect in reply
 	}).
 
--record(state, 
+-record(state,
 	{
 	  port,
 	  link_list  = [] :: [#link {}],
@@ -189,8 +189,8 @@ start_link(Opts) ->
 init([Opts]) ->
     OsPid = list_to_integer(os:getpid()),
     I_Seq = O_Seq = 1234, %% element(2,now()),
-    State = #state{ ospid = OsPid, 
-		    o_seq = O_Seq, 
+    State = #state{ ospid = OsPid,
+		    o_seq = O_Seq,
 		    i_seq = I_Seq },
 
     case os:type() of
@@ -208,10 +208,10 @@ init_drv(Opts, State) ->
     {ok,Rcvbuf} = update_rcvbuf(Port, ?MIN_RCVBUF),
     {ok,Sndbuf} = update_sndbuf(Port, ?MIN_SNDBUF),
 
-    ?info("Rcvbuf: ~w, Sndbuf: ~w", [Rcvbuf, Sndbuf]),
+    lager:info("Rcvbuf: ~w, Sndbuf: ~w", [Rcvbuf, Sndbuf]),
 
     {ok,Sizes} = netlink_drv:get_sizeof(Port),
-    ?info("Sizes: ~w", [Sizes]),
+    lager:info("Sizes: ~w", [Sizes]),
 
     ok = netlink_drv:add_membership(Port, ?RTNLGRP_LINK),
     ok = netlink_drv:add_membership(Port, ?RTNLGRP_IPV4_IFADDR),
@@ -220,9 +220,9 @@ init_drv(Opts, State) ->
     netlink_drv:activate(Port),
     %% init sequence to fill the cache
     T0 = erlang:start_timer(200, self(), request_timeout),
-    R0 = #request { tmr  = T0, 
-		    call = noop, 
-		    from = {self(),make_ref()} 
+    R0 = #request { tmr  = T0,
+		    call = noop,
+		    from = {self(),make_ref()}
 		  },
     R1 = #request { tmr  = {relative, ?REQUEST_TMO},
 		    call = {get,link,unspec,
@@ -230,7 +230,7 @@ init_drv(Opts, State) ->
 			    []},
 		    from = {self(),make_ref()}
 		  },
-    R2 = #request { tmr  = {relative, 1000}, 
+    R2 = #request { tmr  = {relative, 1000},
 		    call = noop,
 		    from = {self(),make_ref()}
 		  },
@@ -263,7 +263,7 @@ handle_call({list,Match}, _From, State) ->
     lists:foreach(
       fun(L) ->
 	      %% select addresses that belong to link L
-	      Ys = [Y || Y <- State#state.addr_list, 
+	      Ys = [Y || Y <- State#state.addr_list,
 			 Y#addr.index =:= L#link.index],
 	      FYs = [format_addr(Y) || Y <- Ys ],
 	      case match(L#link.attr,dict:new(),Match) of
@@ -304,7 +304,7 @@ handle_call({unsubscribe,Ref}, _From, State) ->
 	    {reply,ok,State#state { sub_list=SubList }}
     end;
 handle_call(Req={get,_What,_Fam,_Flags,_Attrs}, From, State) ->
-    ?debug("handle_call: GET: ~p", [Req]),
+    lager:debug("handle_call: GET: ~p", [Req]),
     State1 = enq_request(Req, From, State),
     State2 = dispatch_command(State1),
     {noreply, State2};
@@ -343,10 +343,10 @@ handle_info(_Info={nl_data,Port,Data},State) when Port =:= State#state.port ->
 	MsgList ->
 	    %% FIXME: the messages should be delivered one by one from
 	    %% the driver so the decoding could simplified.
-	    State1 = 
+	    State1 =
 		lists:foldl(
 		  fun(Msg,StateI) ->
-			  ?debug("handle_info: msg=~p", [Msg]),
+			  lager:debug("handle_info: msg=~p", [Msg]),
 			  _Hdr = Msg#nlmsg.hdr,
 			  MsgData = Msg#nlmsg.data,
 			  handle_nlmsg(MsgData, StateI)
@@ -354,7 +354,7 @@ handle_info(_Info={nl_data,Port,Data},State) when Port =:= State#state.port ->
 	    {noreply, State1}
     catch
 	error:_ ->
-	    ?error("netlink: handle_info: Crash: ~p", 
+	    lager:error("netlink: handle_info: Crash: ~p",
 		   [erlang:get_stacktrace()]),
 	    {noreply, State}
     end;
@@ -364,34 +364,34 @@ handle_info({'DOWN',Ref,process,Pid,Reason}, State) ->
 	false ->
 	    {noreply,State};
 	{value,_S,SubList} ->
-	    ?debug("subscription from pid ~p deleted reason=~p",
+	    lager:debug("subscription from pid ~p deleted reason=~p",
 		   [Pid, Reason]),
 	    {noreply,State#state { sub_list=SubList }}
     end;
 handle_info({timeout,Tmr,request_timeout}, State) ->
     R = State#state.request,
     if R#request.tmr =:= Tmr ->
-	    ?debug("Timeout: ref current", []),
+	    lager:debug("Timeout: ref current", []),
 	    gen_server:reply(R#request.from, {error,timeout}),
 	    State1 = State#state { request = undefined },
 	    {noreply, dispatch_command(State1)};
        true ->
 	    case lists:keytake(Tmr, #request.tmr, State#state.request_queue) of
 		false ->
-		    ?debug("Timeout: ref not found", []),
+		    lager:debug("Timeout: ref not found", []),
 		    {noreply, State};
 		{value,#request { from = From},Q} ->
-		    ?debug("Timeout: ref in queue", []),
+		    lager:debug("Timeout: ref in queue", []),
 		    gen_server:reply(From, {error,timeout}),
 		    State1 = State#state { request_queue = Q },
 		    {noreply,dispatch_command(State1)}
 	    end
     end;
 handle_info({Tag, Reply}, State) when is_reference(Tag) ->
-    ?debug("INFO: SELF Reply=~p", [Reply]),
-    {noreply, State};    
+    lager:debug("INFO: SELF Reply=~p", [Reply]),
+    {noreply, State};
 handle_info(_Info, State) ->
-    ?debug("INFO: ~p", [_Info]),
+    lager:debug("INFO: ~p", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -425,24 +425,24 @@ code_change(_OldVsn, State, _Extra) ->
 
 enq_request(Call, From, State) ->
     Tmr = erlang:start_timer(?REQUEST_TMO, self(), request_timeout),
-    R = #request { tmr  = Tmr, 
+    R = #request { tmr  = Tmr,
 		   call = Call,
 		   from = From
 		 },
     Q = State#state.request_queue ++ [R],
     State#state { request_queue = Q }.
-    
+
 dispatch_command(State) when State#state.request =:= undefined ->
     case State#state.request_queue of
 	[R=#request { call = {get,What,Fam,Flags,Attrs} } | Q ] ->
 	    R1 = update_timer(R),
 	    State1 = State#state { request_queue = Q, request = R1 },
-	    ?debug("dispatch_command: ~p", [R1]),
+	    lager:debug("dispatch_command: ~p", [R1]),
 	    get_command(What,Fam,Flags,Attrs,State1);
 	[R=#request { call = noop } | Q ] ->
 	    R1 = update_timer(R),
 	    State1 = State#state { request_queue = Q, request = R1 },
-	    ?debug("dispatch_command: ~p", [R1]),
+	    lager:debug("dispatch_command: ~p", [R1]),
 	    State1; %% let it timeout
 	[] ->
 	    State
@@ -450,7 +450,7 @@ dispatch_command(State) when State#state.request =:= undefined ->
 dispatch_command(State) ->
     State.
 
-update_timer(R = #request { tmr = {relative,Tmo} }) 
+update_timer(R = #request { tmr = {relative,Tmo} })
   when is_integer(Tmo), Tmo >= 0 ->
     Tmr = erlang:start_timer(Tmo, self(), request_timeout),
     R#request { tmr = Tmr };
@@ -495,7 +495,7 @@ get_command(addr,Fam,Flags,Attrs,State) ->
 		     index=0,attributes=Attrs},
     Hdr = #nlmsghdr { type=getaddr,
 		      flags=Flags,
-		      seq=Seq, 
+		      seq=Seq,
 		      pid=State#state.ospid },
     Request = netlink_codec:encode(Hdr,Get),
     netlink_drv:send(State#state.port, Request),
@@ -503,7 +503,7 @@ get_command(addr,Fam,Flags,Attrs,State) ->
 
 handle_nlmsg(RTM=#newlink{family=_Fam,index=Index,flags=Fs,change=Cs,
 			  attributes=As}, State) ->
-    ?debug("RTM = ~p", [RTM]),
+    lager:debug("RTM = ~p", [RTM]),
     Name = proplists:get_value(ifname, As, ""),
     As1 = [{index,Index},{flags,Fs},{change,Cs}|As],
     case lists:keytake(Index, #link.index, State#state.link_list) of
@@ -519,12 +519,12 @@ handle_nlmsg(RTM=#newlink{family=_Fam,index=Index,flags=Fs,change=Cs,
     end;
 handle_nlmsg(RTM=#dellink{family=_Fam,index=Index,flags=_Fs,change=_Cs,
 			  attributes=As}, State) ->
-    ?debug("RTM = ~p\n", [RTM]),
+    lager:debug("RTM = ~p\n", [RTM]),
     Name = proplists:get_value(ifname, As, ""),
     %% does this delete the link?
     case lists:keytake(Index, #link.index, State#state.link_list) of
 	false ->
-	    ?warning("Warning link index=~w not found", [Index]),
+	    lager:warning("Warning link index=~w not found", [Index]),
 	    State;
 	{value,L,Ls} ->
 	    As1 = dict:to_list(L#link.attr),
@@ -535,14 +535,14 @@ handle_nlmsg(RTM=#newaddr { family=Fam, prefixlen=Prefixlen,
 			    flags=Flags, scope=Scope,
 			    index=Index, attributes=As },
 	     State) ->
-    ?debug("RTM = ~p", [RTM]),
+    lager:debug("RTM = ~p", [RTM]),
     Addr = proplists:get_value(address, As, {}),
     Name = proplists:get_value(label, As, ""),
     As1 = [{family,Fam},{prefixlen,Prefixlen},{flags,Flags},
 	   {scope,Scope},{index,Index} | As],
     case lists:keymember(Index, #link.index, State#state.link_list) of
 	false ->
-	    ?warning("link index ~p does not exist", [Index]);
+	    lager:warning("link index ~p does not exist", [Index]);
 	true ->
 	    ok
     end,
@@ -560,12 +560,12 @@ handle_nlmsg(RTM=#newaddr { family=Fam, prefixlen=Prefixlen,
 
 handle_nlmsg(RTM=#deladdr { family=_Fam, index=_Index, attributes=As },
 	     State) ->
-    ?debug("RTM = ~p", [RTM]),
+    lager:debug("RTM = ~p", [RTM]),
     Addr = proplists:get_value(address, As, {}),
     Name = proplists:get_value(label, As, ""),
     case lists:keytake(Addr, #addr.addr, State#state.addr_list) of
 	false ->
-	    ?warning("Warning addr=~s not found", [Addr]),
+	    lager:warning("Warning addr=~s not found", [Addr]),
 	    State;
 	{value,Y,Ys} ->
 	    As1 = dict:to_list(Y#addr.attr),
@@ -577,7 +577,7 @@ handle_nlmsg(#done { }, State) ->
 	undefined ->
 	    dispatch_command(State);
 	#request { tmr = Tmr, from = From, reply = Reply } ->
-	    ?debug("handle_nlmsg: DONE: ~p", 
+	    lager:debug("handle_nlmsg: DONE: ~p",
 		   [State#state.request]),
 	    erlang:cancel_timer(Tmr),
 	    gen_server:reply(From, Reply),
@@ -585,12 +585,12 @@ handle_nlmsg(#done { }, State) ->
 	    dispatch_command(State1)
     end;
 handle_nlmsg(Err=#error { errno=Err }, State) ->
-    ?debug("handle_nlmsg: ERROR: ~p", [State#state.request]),
+    lager:debug("handle_nlmsg: ERROR: ~p", [State#state.request]),
     case State#state.request of
 	undefined ->
 	    dispatch_command(State);
 	#request { tmr = Tmr, from = From } ->
-	    ?debug("handle_nlmsg: DONE: ~p", 
+	    lager:debug("handle_nlmsg: DONE: ~p",
 		   [State#state.request]),
 	    erlang:cancel_timer(Tmr),
 	    %% fixme: convert errno to posix error (netlink.inc?)
@@ -600,7 +600,7 @@ handle_nlmsg(Err=#error { errno=Err }, State) ->
     end;
 
 handle_nlmsg(RTM, State) ->
-    ?debug("netlink: handle_nlmsg, ignore ~p", [RTM]),
+    lager:debug("netlink: handle_nlmsg, ignore ~p", [RTM]),
     State.
 
 %% update attributes form interface "Name"
@@ -615,7 +615,7 @@ update_attrs(Name,Type,As,To,Subs) ->
     lists:foldl(
       fun({K,Vnew},D) ->
 	      case dict:find(K,D) of
-		  error -> 
+		  error ->
 		      send_event(Name,Type,K,undefined,Vnew,Subs),
 		      dict:store(K,Vnew,D);
 		  {ok,Vnew} -> D;  %% already exist
@@ -626,10 +626,10 @@ update_attrs(Name,Type,As,To,Subs) ->
       end, To, As).
 
 
-send_event(Name,Type,Field,Old,New,[S|SList]) when 
+send_event(Name,Type,Field,Old,New,[S|SList]) when
       S#subscription.name =:= Name; S#subscription.name =:= "" ->
     case S#subscription.fields =:= all orelse
-	S#subscription.fields =:= Type orelse 
+	S#subscription.fields =:= Type orelse
 	lists:member(Field,S#subscription.fields) orelse
 	lists:member({Type,Field},S#subscription.fields) of
 	true ->
@@ -643,7 +643,7 @@ send_event(Name,Type,Field,Old,New,[_|SList]) ->
     send_event(Name,Type,Field,Old,New,SList);
 send_event(_Name,_Type,_Field,_Old,_New,[]) ->
     ok.
-	    
+
 
 match(Y,L,[{Field,Value}|Match]) when is_atom(Field) ->
     case find2(Field,Y,L) of
